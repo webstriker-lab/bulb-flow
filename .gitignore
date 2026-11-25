@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+
+# Local data & temporary captures
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+shots/
+
+# Local build inspection metadata
+MECHANICS.md
+mechanics.json
+
+# OS
+.DS_Store
+Thumbs.db
