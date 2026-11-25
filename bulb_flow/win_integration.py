@@ -5,6 +5,7 @@ from __future__ import annotations
 import ctypes
 from ctypes import wintypes
 import os
+import re
 import threading
 import time
 from typing import Callable
@@ -16,6 +17,7 @@ from .constants import (
     DICTATION_DEBOUNCE_MS,
     HOLD_THRESHOLD_MS,
     PASTE_COMPLETE_SLEEP_MS,
+    PASTE_DELIMITER_REGEX,
 )
 
 _IS_WIN = os.name == "nt"
@@ -23,13 +25,16 @@ _user32 = ctypes.windll.user32 if _IS_WIN else None
 _kernel32 = ctypes.windll.kernel32 if _IS_WIN else None
 
 # Virtual key codes
+VK_TAB = 0x09
+VK_RETURN = 0x0D
+VK_SHIFT = 0x10
 VK_CONTROL = 0x11
+VK_MENU = 0x12
+VK_CAPITAL = 0x14
 VK_LCONTROL = 0xA2
 VK_RCONTROL = 0xA3
-VK_MENU = 0x12
 VK_LMENU = 0xA4
 VK_RMENU = 0xA5
-VK_SHIFT = 0x10
 VK_LWIN = 0x5B
 VK_RWIN = 0x5C
 VK_SPACE = 0x20
@@ -83,6 +88,8 @@ def is_combo_down(combo_id: str) -> bool:
     c = (combo_id or "").lower().strip()
     if c == "ctrl+win":
         return _is_vk_down(VK_CONTROL) and (_is_vk_down(VK_LWIN) or _is_vk_down(VK_RWIN))
+    if c == "capslock":
+        return _is_vk_down(VK_CAPITAL)
     if c == "ctrl+win+space":
         return _is_vk_down(VK_CONTROL) and (_is_vk_down(VK_LWIN) or _is_vk_down(VK_RWIN)) and _is_vk_down(VK_SPACE)
     if c == "ralt":
@@ -290,38 +297,79 @@ def _send_ctrl_v() -> None:
     _user32.SendInput(len(seq), ctypes.byref(inputs), ctypes.sizeof(INPUT))
 
 
-def paste_text_into_active_window(text: str, restore_clipboard: bool = True) -> bool:
-    """Copy text privately to clipboard, send Ctrl+V, verify seq, and safely restore previous clipboard.
+def _send_single_vk(vk: int) -> None:
+    if not _IS_WIN or not _user32:
+        return
+    inputs = (INPUT * 2)()
+    inputs[0].type = INPUT_KEYBOARD
+    inputs[0].union.ki = KEYBDINPUT(wVk=vk, wScan=0, dwFlags=0, time=0, dwExtraInfo=None)
+    inputs[1].type = INPUT_KEYBOARD
+    inputs[1].union.ki = KEYBDINPUT(wVk=vk, wScan=0, dwFlags=KEYEVENTF_KEYUP, time=0, dwExtraInfo=None)
+    _user32.SendInput(2, ctypes.byref(inputs), ctypes.sizeof(INPUT))
 
-    Matches Wispr Flow Helper.exe mechanics:
-    - Privacy clipboard formats (fn 0x14032a5a0 / 0x14032c450) prevent Win+V history pollution
-    - Sequence verification before restore (fn 0x14031d060) skips restore if user copied new text
-    - 50ms post-paste sleep (fn 0x140327e50 @ 0x140328058)
+
+def clear_caps_lock_toggle() -> None:
+    """Clear accidental Caps Lock toggle after single-key Caps Lock PTT (Ghidra FUN_140416f50)."""
+    if not _IS_WIN or not _user32:
+        return
+    try:
+        if _user32.GetKeyState(VK_CAPITAL) & 1:
+            _send_single_vk(VK_CAPITAL)
+    except Exception:
+        pass
+
+
+def paste_text_into_active_window(text: str, restore_clipboard: bool = True) -> bool:
+    """Copy text privately to clipboard, send Ctrl+V (supporting {{TAB}}/{{ENTER}}), and safely restore clipboard.
+
+    Matches Ghidra-decompiled Wispr Flow Helper.exe mechanics:
+    - Privacy clipboard formats (FUN_14032a5a0 / FUN_14032c450) prevent Win+V history pollution
+    - Sequence verification before restore (FUN_14031d060) skips restore if user copied new text
+    - 50ms sleep (FUN_140327e50 -> Thread.Sleep(0x32))
+    - Delimiter-aware token pasting (FUN_1403530e0 -> regex {{[A-Z]+}})
     """
     if not text:
         return False
     previous = _get_clipboard_text() if restore_clipboard else None
-    seq_before = _get_clipboard_sequence_number()
-    if not set_clipboard_text(text, mark_private=True):
-        return False
-    seq_after_write = _get_clipboard_sequence_number()
-    if seq_after_write == seq_before:
-        # Retry write once if clipboard sequence did not advance
-        time.sleep(0.02)
-        if not set_clipboard_text(text, mark_private=True):
-            return False
-        seq_after_write = _get_clipboard_sequence_number()
+    last_seq = _get_clipboard_sequence_number()
 
-    time.sleep(PASTE_COMPLETE_SLEEP_MS / 1000.0)
-    _send_ctrl_v()
-    time.sleep(PASTE_COMPLETE_SLEEP_MS / 1000.0)
+    def _paste_chunk(chunk: str) -> None:
+        nonlocal last_seq
+        if not chunk:
+            return
+        seq_before = _get_clipboard_sequence_number()
+        if not set_clipboard_text(chunk, mark_private=True):
+            return
+        seq_after = _get_clipboard_sequence_number()
+        if seq_after == seq_before:
+            time.sleep(0.02)
+            set_clipboard_text(chunk, mark_private=True)
+            seq_after = _get_clipboard_sequence_number()
+        last_seq = seq_after
+        time.sleep(PASTE_COMPLETE_SLEEP_MS / 1000.0)
+        _send_ctrl_v()
+        time.sleep(PASTE_COMPLETE_SLEEP_MS / 1000.0)
+
+    if re.search(PASTE_DELIMITER_REGEX, text):
+        parts = re.split(f"({PASTE_DELIMITER_REGEX})", text)
+        for part in parts:
+            if part == "{{TAB}}":
+                _send_single_vk(VK_TAB)
+                time.sleep(0.02)
+            elif part == "{{ENTER}}":
+                _send_single_vk(VK_RETURN)
+                time.sleep(0.02)
+            else:
+                _paste_chunk(part)
+    else:
+        _paste_chunk(text)
 
     if restore_clipboard and previous is not None:
-        expected_seq = seq_after_write
+        expected_seq = last_seq
 
         def _restore() -> None:
             time.sleep(CLIPBOARD_RESTORE_DELAY_MS / 1000.0)
-            # Only restore if clipboard was not modified by user or another app (fn 0x14031d060)
+            # Only restore if clipboard was not modified by user or another app (FUN_14031d060)
             if _get_clipboard_sequence_number() == expected_seq:
                 set_clipboard_text(previous, mark_private=True)
 
@@ -429,6 +477,8 @@ class GlobalHotkeyMonitor:
                         self._on_start("ptt")
                 elif not ptt_down and ptt_was_down:
                     held_ms = (now - ptt_down_since) * 1000.0
+                    if ptt_key == "capslock":
+                        clear_caps_lock_toggle()
                     if ptt_dictating:
                         ptt_dictating = False
                         if held_ms < HOLD_THRESHOLD_MS and hf_key == "double_tap":

@@ -27,9 +27,10 @@ HOLD_THRESHOLD_MS = 350
 DICTATION_DEBOUNCE_MS = 500
 DICTATION_WARNING_TIMEOUT_MS = 19 * 60 * 1000
 DICTATION_MAX_TIMEOUT_MS = 20 * 60 * 1000
-PASTE_COMPLETE_SLEEP_MS = 50       # Wispr Flow Helper.exe fn 0x140327e50 @ 0x140328058
+PASTE_COMPLETE_SLEEP_MS = 50       # Ghidra FUN_140327e50 (Thread.Sleep(0x32))
 CLIPBOARD_RESTORE_DELAY_MS = 250   # Wispr Flow Helper.exe str 0x11fa544
-CLIPBOARD_PRIVACY_FORMATS = (      # Wispr Flow Helper.exe fn 0x14032a5a0 / 0x14032c450
+PASTE_DELIMITER_REGEX = r"\{\{[A-Z]+\}\}"  # Ghidra FUN_1403530e0 @ 0x14121ac98
+CLIPBOARD_PRIVACY_FORMATS = (      # Ghidra FUN_14032a5a0 / FUN_14032c450
     "ExcludeClipboardContentFromMonitorProcessing",
     "CanIncludeInClipboardHistory",
     "CanUploadToCloudClipboard",
@@ -66,8 +67,12 @@ APP_CATEGORIES = [
     {
         "id": "code",
         "label": "Code & IDE",
-        "apps": ["VS Code", "Cursor", "Windsurf", "Terminal", "JetBrains"],
-        "keywords": ["code", "cursor", "windsurf", "pycharm", "idea", "windowsterminal", "powershell", "cmd", "antigravity"],
+        "apps": ["VS Code", "Cursor", "Windsurf", "GitHub Desktop", "Devin", "Replit", "ChatGPT", "Claude", "Terminal"],
+        "keywords": [
+            "code", "cursor", "windsurf", "pycharm", "idea", "windowsterminal",
+            "powershell", "cmd", "antigravity", "githubdesktop", "github.com",
+            "devin", "replit", "v0.dev", "chatgpt", "claude.ai", "gemini.google.com",
+        ],
         "default_tone": "formal",
         "default_cleanup": "light",
     },
@@ -323,6 +328,7 @@ LLM_PROVIDERS = [
 
 HOTKEY_PRESETS = [
     ("ctrl+win", "Ctrl + Win"),
+    ("capslock", "Caps Lock (auto-restores toggle)"),
     ("ralt", "Right Alt"),
     ("ctrl+shift+space", "Ctrl + Shift + Space"),
     ("f9", "F9"),
